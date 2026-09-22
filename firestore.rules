@@ -27,6 +27,18 @@ service cloud.firestore {
     && photos(g.photos) && g.isPublic is bool && g.deleted is bool && g.revision is int && g.updatedAt==request.time;
   }
   function ownGeckoExists(uid,gid) { return exists(/databases/$(database)/documents/users/$(uid)/geckos/$(gid)) && !get(/databases/$(database)/documents/users/$(uid)/geckos/$(gid)).data.deleted; }
+  // Public display names only. Google names, emails and private records are not stored here.
+  match /profiles/{uid} {
+   allow get: if true;
+   allow list: if false;
+   allow create,update: if owner(uid)
+    && request.resource.data.keys().hasOnly(['nickname','updatedAt'])
+    && request.resource.data.nickname is string
+    && request.resource.data.nickname.size()>=2 && request.resource.data.nickname.size()<=20
+    && request.resource.data.nickname.matches('[^\\x00-\\x1f\\x7f]{2,20}')
+    && request.resource.data.updatedAt==request.time;
+   allow delete: if owner(uid);
+  }
   match /users/{uid}/geckos/{gid} {
    allow read: if owner(uid);
    allow create: if owner(uid) && geckoValid(request.resource.data,gid) && request.resource.data.revision==1 && publicationValid(uid,gid,request.resource.data);

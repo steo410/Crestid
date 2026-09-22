@@ -19,3 +19,12 @@ test('anonymous edits accepted only with immutable history',async()=>{await asse
 test('catalog missing history and direct unauthenticated writes denied',async()=>{await assertFails(setDoc(doc(anon,'morphs/normal'),morph(2)));await assertFails(edit(guest,morph(2)));await assertFails(deleteDoc(doc(anon,'morphs/normal')));});
 test('anonymous deletion and restoration are revisioned',async()=>{await assertSucceeds(edit(anon,morph(2,true)));await assertSucceeds(edit(anon,{...morph(3),name:'복원한 노멀'}));await assertSucceeds(getDoc(doc(guest,'morphs/normal/history/2')));});
 test('growth belongs to Google owner and references own gecko',async()=>{const row={id:'r',geckoId:'private',date:'2026-09-22',weight:10,length:8,condition:'좋음',note:'PRIVATE',revision:1,updatedAt:serverTimestamp()};await assertSucceeds(setDoc(doc(a,'users/alice/growth/r'),row));await assertFails(getDoc(doc(b,'users/alice/growth/r')));await assertFails(setDoc(doc(a,'users/alice/growth/bad'),{...row,id:'bad',geckoId:'not-owned'}));});
+
+test('public nicknames editable by Google owner only, with no private fields',async()=>{
+ const ref=doc(a,'profiles/alice'),row={nickname:'크레집사',updatedAt:serverTimestamp()};
+ await assertSucceeds(setDoc(ref,row));await assertSucceeds(getDoc(doc(guest,'profiles/alice')));
+ await assertFails(setDoc(doc(b,'profiles/alice'),row));await assertFails(setDoc(doc(anon,'profiles/visitor'),row));
+ await assertFails(setDoc(ref,{...row,email:'private@example.com'}));
+ await assertFails(setDoc(ref,{...row,nickname:'a'}));await assertFails(setDoc(ref,{...row,nickname:'x'.repeat(21)}));
+ await assertSucceeds(setDoc(ref,{...row,nickname:'새닉네임'}));
+});

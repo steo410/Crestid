@@ -64,3 +64,10 @@ export async function importRecord(kind,record,expectedUid){
   tx.set(ref,{...data,revision:1,updatedAt:f.serverTimestamp()});return true;
  });
 }
+
+export function watchProfile(uid,cb,onError){return f.onSnapshot(f.doc(db,'profiles',uid),snap=>cb(snap.exists()?snap.data():null),onError);}
+export async function saveNickname(value){
+ const uid=googleUser().uid,nickname=String(value).trim();
+ if(nickname.length<2||nickname.length>20||/[\x00-\x1f\x7f]/.test(nickname))throw Error('닉네임은 제어 문자 없이 2~20자로 입력하세요.');
+ await f.setDoc(f.doc(db,'profiles',uid),{nickname,updatedAt:f.serverTimestamp()});
+}
