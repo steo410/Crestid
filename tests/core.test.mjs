@@ -19,3 +19,20 @@ test('legacy migration preserves links and measurements, makes all geckos privat
  assert.throws(()=>convertLegacy({...source,growth:[{...source.growth[0],geckoId:'missing'}]}));
  assert.throws(()=>sourceUrl('https://example.com'));assert.equal(sourceUrl('owner/repo'),'https://raw.githubusercontent.com/owner/repo/crestie-data/data/cresties.json');
 });
+
+test('catalog combinations and het selections drive simulation with explicit assumptions',async()=>{
+ const {traitsToGenes,simulateTraits,initialTraits}=await import('../src/trait-genetics.mjs');
+ assert.deepEqual(traitsToGenes(['솔리드 릴리아잔틱']),{lilly:'lilly',axanthic:'visual',cappuccino:'unknown',solidBack:'present'});
+ assert.equal(traitsToGenes(['프라푸치노']).cappuccino,'cappuccino');
+ assert.equal(traitsToGenes(['66% 가능 헷 아잔틱']).axanthic,'het66');
+ assert.throws(()=>traitsToGenes(['아잔틱','100% 헷 아잔틱']),/충돌/);
+ const a=normalizeGecko({name:'A',customTraits:['릴리아잔틱']}),b=normalizeGecko({name:'B',customTraits:['노멀']});
+ assert.equal(simulateTraits(a,b).rows.length,0);
+ const r=simulateTraits(a,b,SEED,true);assert.equal(r.rows.length,2);assert(r.assumptions.length>0);assert(r.rows.every(row=>row.genes.axanthic===1));assert.equal(r.rows.find(row=>row.genes.lilly===1).p,.5);
+ assert.equal(b.genetics.axanthic,'unknown');
+ const old=normalizeGecko({genetics:{lilly:'super',axanthic:'het50',cappuccino:'normal',solidBack:'absent'}});
+ assert.deepEqual(traitsToGenes(initialTraits(old)),old.genetics);
+ const renamed=SEED.map(m=>m.id==='lilly'?{...m,name:'이름을 바꾼 릴리'}:m);
+ assert.equal(traitsToGenes(['이름을 바꾼 릴리'],renamed).lilly,'lilly');
+ assert.equal(traitsToGenes(['세이블']).lilly,'unknown');
+});
