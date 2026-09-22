@@ -90,6 +90,68 @@ service cloud.firestore {
     allow update,delete: if false;
    }
   }
+  function signed() { return request.auth!=null; }
+  function guestAuth() { return signed() && request.auth.token.firebase.sign_in_provider=='anonymous'; }
+  function googleAuth() { return signed() && owner(request.auth.uid); }
+  match /chatMeta/guests {
+   allow get: if signed();
+   function allocationValid() { return guestAuth()
+    && request.resource.data.keys().hasOnly(['count','lastUid'])
+    && request.resource.data.count is int
+    && request.resource.data.lastUid==request.auth.uid
+    && !exists(/databases/$(database)/documents/chatGuests/$(request.auth.uid))
+    && getAfter(/databases/$(database)/documents/chatGuests/$(request.auth.uid)).data.number==request.resource.data.count; }
+   allow create: if allocationValid() && request.resource.data.count==1;
+   allow update: if allocationValid() && request.resource.data.count==resource.data.count+1;
+  }
+  match /chatGuests/{uid} {
+   allow get: if signed() && request.auth.uid==uid;
+   allow create: if guestAuth() && request.auth.uid==uid
+    && request.resource.data.keys().hasOnly(['number','createdAt'])
+    && request.resource.data.number is int && request.resource.data.number>0
+    && request.resource.data.createdAt==request.time
+    && getAfter(/databases/$(database)/documents/chatMeta/guests).data.lastUid==uid
+    && getAfter(/databases/$(database)/documents/chatMeta/guests).data.count==request.resource.data.number;
+  }
+  match /chatSenders/{uid} {
+   allow get: if signed() && request.auth.uid==uid;
+   allow create,update: if signed() && request.auth.uid==uid
+    && request.resource.data.keys().hasOnly(['lastId','sentAt'])
+    && text(request.resource.data.lastId,100) && request.resource.data.lastId.size()>0
+    && request.resource.data.sentAt==request.time
+    && (!exists(/databases/$(database)/documents/chatSenders/$(uid)) || request.time>=resource.data.sentAt+duration.value(2,'s'));
+  }
+  function messageValid(d,mid) {
+   return signed() && d.keys().hasOnly(['senderId','senderName','text','createdAt'])
+    && d.senderId==request.auth.uid && text(d.text,1000) && d.text.size()>0
+    && d.createdAt==request.time
+    && (googleAuth()?d.senderName==get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.nickname:
+      guestAuth() && d.senderName=='게스트'+string(get(/databases/$(database)/documents/chatGuests/$(request.auth.uid)).data.number))
+    && getAfter(/databases/$(database)/documents/chatSenders/$(request.auth.uid)).data.lastId==mid
+    && getAfter(/databases/$(database)/documents/chatSenders/$(request.auth.uid)).data.sentAt==request.time;
+  }
+  match /publicMessages/{mid} {
+   allow read: if true;
+   allow create: if messageValid(request.resource.data,mid);
+  }
+  match /chatRooms/{rid} {
+   allow get: if googleAuth() && (!exists(/databases/$(database)/documents/chatRooms/$(rid)) || request.auth.uid in resource.data.members);
+   allow list: if googleAuth() && request.auth.uid in resource.data.members;
+   allow create: if googleAuth()
+    && request.resource.data.keys().hasOnly(['members','publicId','createdAt'])
+    && request.resource.data.members is list && request.resource.data.members.size()==2
+    && request.resource.data.members[0] is string && request.resource.data.members[1] is string
+    && request.resource.data.members[0]!=request.resource.data.members[1]
+    && rid==request.resource.data.members[0]+'__'+request.resource.data.members[1]
+    && request.auth.uid in request.resource.data.members
+    && request.resource.data.createdAt==request.time
+    && get(/databases/$(database)/documents/publicGeckos/$(request.resource.data.publicId)).data.ownerId in request.resource.data.members
+    && get(/databases/$(database)/documents/publicGeckos/$(request.resource.data.publicId)).data.ownerId!=request.auth.uid;
+   match /messages/{mid} {
+    allow read: if googleAuth() && request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(rid)).data.members;
+    allow create: if googleAuth() && request.auth.uid in get(/databases/$(database)/documents/chatRooms/$(rid)).data.members && messageValid(request.resource.data,mid);
+   }
+  }
   match /{document=**} { allow read,write: if false; }
  }
 }

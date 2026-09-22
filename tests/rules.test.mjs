@@ -1,6 +1,6 @@
 import {before,after,test} from 'node:test';import fs from 'node:fs';
 import {initializeTestEnvironment,assertFails,assertSucceeds} from '@firebase/rules-unit-testing';
-import {doc,setDoc,getDoc,updateDoc,deleteDoc,writeBatch,serverTimestamp} from 'firebase/firestore';
+import {doc,setDoc,getDoc,updateDoc,deleteDoc,writeBatch,serverTimestamp,runTransaction,collection,query,where,getDocs,Timestamp} from 'firebase/firestore';
 import {normalizeGecko,publicProjection} from '../src/core.mjs';import {SEED} from '../src/catalog-seed.mjs';
 let env,a,b,anon,guest;
 before(async()=>{env=await initializeTestEnvironment({projectId:'demo-crestie-community',firestore:{rules:fs.readFileSync('firestore.rules','utf8')}});a=env.authenticatedContext('alice',{firebase:{sign_in_provider:'google.com'}}).firestore();b=env.authenticatedContext('bob',{firebase:{sign_in_provider:'google.com'}}).firestore();anon=env.authenticatedContext('visitor',{firebase:{sign_in_provider:'anonymous'}}).firestore();guest=env.unauthenticatedContext().firestore();});
@@ -27,4 +27,40 @@ test('public nicknames editable by Google owner only, with no private fields',as
  await assertFails(setDoc(ref,{...row,email:'private@example.com'}));
  await assertFails(setDoc(ref,{...row,nickname:'a'}));await assertFails(setDoc(ref,{...row,nickname:'x'.repeat(21)}));
  await assertSucceeds(setDoc(ref,{...row,nickname:'새닉네임'}));
+});
+
+async function allocate(client,uid){return runTransaction(client,async tx=>{const ref=doc(client,'chatGuests',uid),counter=doc(client,'chatMeta/guests');const g=await tx.get(ref);if(g.exists())return g.data().number;const c=await tx.get(counter),number=(c.data()?.count||0)+1;tx.set(counter,{count:number,lastUid:uid});tx.set(ref,{number,createdAt:serverTimestamp()});return number;});}
+function message(client,uid,name,id,path='publicMessages',text='안녕하세요'){const batch=writeBatch(client);batch.set(doc(client,'chatSenders',uid),{lastId:id,sentAt:serverTimestamp()});batch.set(doc(client,path,id),{senderId:uid,senderName:name,text,createdAt:serverTimestamp()});return batch.commit();}
+test('guests get atomic sequential identities; cannot choose a number or impersonate',async()=>{
+ const v1=env.authenticatedContext('guest1',{firebase:{sign_in_provider:'anonymous'}}).firestore(),v2=env.authenticatedContext('guest2',{firebase:{sign_in_provider:'anonymous'}}).firestore();
+ const nums=await Promise.all([allocate(v1,'guest1'),allocate(v2,'guest2')]);if(new Set(nums).size!==2||Math.min(...nums)!==1||Math.max(...nums)!==2)throw Error('Guest sequence failed');
+ if(await allocate(v1,'guest1')!==nums[0])throw Error('Guest identity changed');
+ await assertFails(setDoc(doc(v1,'chatGuests/guest1'),{number:99,createdAt:serverTimestamp()}));
+ await assertFails(message(v1,'guest1','게스트999','spoof'));
+ await assertSucceeds(message(v1,'guest1','게스트'+nums[0],'hello'));
+ await assertFails(message(v1,'guest1','게스트'+nums[0],'spam'));
+ await assertSucceeds(getDoc(doc(guest,'publicMessages/hello')));
+ await assertFails(updateDoc(doc(v1,'publicMessages/hello'),{text:'edit'}));
+});
+test('public chat enforces nickname and authenticated identity',async()=>{
+ await assertFails(message(a,'alice','가짜닉네임','fake-name'));
+ await assertSucceeds(message(a,'alice','새닉네임','alice-chat'));
+ await assertFails(message(guest,'nobody','게스트1','unauthenticated'));
+ await assertFails(setDoc(doc(b,'publicMessages/forged'),{senderId:'alice',senderName:'새닉네임',text:'hijack',createdAt:serverTimestamp()}));
+});
+test('private rooms and messages are restricted to the two Google participants',async()=>{
+ await assertSucceeds(publication(a,g('dm-gecko',{isPublic:true})).commit());
+ const room={members:['alice','bob'],publicId:'alice__dm-gecko',createdAt:serverTimestamp()},rid='alice__bob';
+ await assertSucceeds(getDoc(doc(b,'chatRooms',rid)));await assertSucceeds(setDoc(doc(b,'chatRooms',rid),room));
+ await assertSucceeds(getDocs(query(collection(b,'chatRooms'),where('members','array-contains','bob'))));
+ const stranger=env.authenticatedContext('mallory',{firebase:{sign_in_provider:'google.com'}}).firestore();
+ await assertFails(getDoc(doc(stranger,'chatRooms',rid)));await assertFails(getDoc(doc(anon,'chatRooms',rid)));await assertFails(getDocs(collection(b,'chatRooms')));
+ await assertFails(updateDoc(doc(b,'chatRooms',rid),{members:['bob','mallory']}));
+ await assertSucceeds(setDoc(doc(b,'profiles/bob'),{nickname:'밥집사',updatedAt:serverTimestamp()}));
+ await assertSucceeds(message(b,'bob','밥집사','dm-msg','chatRooms/'+rid+'/messages'));
+ await assertSucceeds(getDoc(doc(a,'chatRooms',rid,'messages','dm-msg')));
+ await assertFails(getDoc(doc(stranger,'chatRooms',rid,'messages','dm-msg')));
+ await assertFails(message(stranger,'mallory','가짜','intruder','chatRooms/'+rid+'/messages'));
+ await assertFails(setDoc(doc(anon,'chatRooms/visitor__alice'),{...room,members:['visitor','alice']}));
+ await assertFails(setDoc(doc(b,'chatRooms/bob__mallory'),{...room,members:['bob','mallory']}));
 });

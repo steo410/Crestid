@@ -71,3 +71,50 @@ export async function saveNickname(value){
  if(nickname.length<2||nickname.length>20||/[\x00-\x1f\x7f]/.test(nickname))throw Error('닉네임은 제어 문자 없이 2~20자로 입력하세요.');
  await f.setDoc(f.doc(db,'profiles',uid),{nickname,updatedAt:f.serverTimestamp()});
 }
+
+let visitorPending=null;
+export function chatUser(){return auth?.currentUser||null;}
+export async function ensureVisitor(){
+ if(visitorPending)return visitorPending;
+ visitorPending=(async()=>{
+  if(!auth.currentUser)await a.signInAnonymously(auth);
+  const user=auth.currentUser;if(!user?.isAnonymous)return user;
+  const ref=f.doc(db,'chatGuests',user.uid),counter=f.doc(db,'chatMeta','guests');
+  await f.runTransaction(db,async tx=>{
+   const guest=await tx.get(ref);if(guest.exists())return;
+   const count=await tx.get(counter);if(auth.currentUser?.uid!==user.uid)throw Error('계정이 변경되었습니다.');
+   const number=(count.data()?.count||0)+1;
+   tx.set(counter,{count:number,lastUid:user.uid});tx.set(ref,{number,createdAt:f.serverTimestamp()});
+  });return user;
+ })();try{return await visitorPending;}finally{visitorPending=null;}
+}
+export async function chatIdentity(){
+ await ensureVisitor();const user=auth.currentUser;if(!user)throw Error('채팅 연결을 확인하세요.');
+ const ref=f.doc(db,user.isAnonymous?'chatGuests':'profiles',user.uid),snap=await f.getDocFromServer(ref);
+ if(auth.currentUser?.uid!==user.uid)throw Error('계정이 변경되었습니다.');
+ const name=user.isAnonymous?'게스트'+snap.data()?.number:snap.data()?.nickname;
+ if(!name||name==='게스트undefined')throw Error(user.isAnonymous?'게스트 번호를 발급하지 못했습니다.':'상단에서 닉네임을 먼저 설정해 주세요.');
+ return {uid:user.uid,name,guest:user.isAnonymous};
+}
+export function watchRooms(cb,onError){const uid=googleUser().uid;return f.onSnapshot(f.query(f.collection(db,'chatRooms'),f.where('members','array-contains',uid)),s=>cb(s.docs.map(d=>({...d.data(),id:d.id}))),onError);}
+export async function openPrivateRoom(publicId){
+ const uid=googleUser().uid,g=await getPublic(publicId);if(g.ownerId===uid)throw Error('본인에게는 개인챗을 보낼 수 없습니다.');
+ const members=[uid,g.ownerId].sort(),roomId=members.join('__'),ref=f.doc(db,'chatRooms',roomId);
+ await f.runTransaction(db,async tx=>{const old=await tx.get(ref);if(auth.currentUser?.uid!==uid)throw Error('계정이 변경되었습니다.');if(!old.exists())tx.set(ref,{members,publicId,createdAt:f.serverTimestamp()});});return roomId;
+}
+export function watchMessages(roomId,cb,onError,count=50){
+ const ref=roomId?f.collection(db,'chatRooms',roomId,'messages'):f.collection(db,'publicMessages');
+ return f.onSnapshot(f.query(ref,f.orderBy('createdAt','desc'),f.limit(count)),s=>cb(s.docs.map(d=>({...d.data(),id:d.id})).reverse()),onError);
+}
+export async function sendChat(roomId,textValue){
+ const text=String(textValue).trim();if(!text||text.length>1000)throw Error('메시지는 1~1000자로 입력하세요.');
+ const identity=await chatIdentity();if(roomId&&identity.guest)throw Error('개인챗은 Google 로그인이 필요합니다.');
+ const message=f.doc(roomId?f.collection(db,'chatRooms',roomId,'messages'):f.collection(db,'publicMessages'));
+ const throttle=f.doc(db,'chatSenders',identity.uid);
+ await f.runTransaction(db,async tx=>{
+  const last=await tx.get(throttle);if(auth.currentUser?.uid!==identity.uid)throw Error('계정이 변경되었습니다.');
+  if(last.exists()&&Date.now()-last.data().sentAt.toMillis()<2100)throw Error('잠시 후 보내주세요. 메시지는 2초 간격으로 보낼 수 있습니다.');
+  tx.set(throttle,{lastId:message.id,sentAt:f.serverTimestamp()});
+  tx.set(message,{senderId:identity.uid,senderName:identity.name,text,createdAt:f.serverTimestamp()});
+ });
+}
