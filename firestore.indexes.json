@@ -1,0 +1,1 @@
+{"indexes":[],"fieldOverrides":[{"collectionGroup":"geckos","fieldPath":"photos","indexes":[]},{"collectionGroup":"publicGeckos","fieldPath":"photos","indexes":[]},{"collectionGroup":"geckos","fieldPath":"notes","indexes":[]}]}

@@ -1,0 +1,83 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  function owner(uid) { return request.auth != null && request.auth.uid == uid && request.auth.token.firebase.sign_in_provider == 'google.com'; }
+  function text(v,n) { return v is string && v.size() <= n; }
+  function photo(v) { return v is string && v.size() <= 180000 && v.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+'); }
+  function photos(v) { return v is list && v.size() <= 3 && (v.size()<1 || photo(v[0])) && (v.size()<2 || photo(v[1])) && (v.size()<3 || photo(v[2])); }
+  function genes(g) {
+   return g is map && g.keys().hasOnly(['lilly','axanthic','cappuccino','solidBack'])
+    && g.lilly in ['unknown','normal','lilly','super'] && g.axanthic in ['unknown','clear','het100','het66','het50','visual']
+    && g.cappuccino in ['unknown','normal','cappuccino','super'] && g.solidBack in ['unknown','present','absent'];
+  }
+  function sharedMatches(s,g,uid,gid) {
+   return s.keys().hasOnly(['ownerId','geckoId','name','morph','sex','hatchDate','customTraits','genetics','photos','revision','updatedAt'])
+    && s.ownerId==uid && s.geckoId==gid && s.name==g.name && s.morph==g.morph && s.sex==g.sex && s.hatchDate==g.hatchDate
+    && s.customTraits==g.customTraits && s.genetics==g.genetics && s.photos==g.photos && s.revision==g.revision && s.updatedAt==g.updatedAt;
+  }
+  function publicationValid(uid,gid,g) {
+   let path=/databases/$(database)/documents/publicGeckos/$(uid+'__'+gid);
+   return g.isPublic && !g.deleted ? existsAfter(path) && sharedMatches(getAfter(path).data,g,uid,gid) : !existsAfter(path);
+  }
+  function geckoValid(g,gid) {
+   return g.keys().hasOnly(['id','name','morph','sex','hatchDate','acquiredDate','breeder','notes','breederNotation','parent1Id','parent2Id','customTraits','genetics','photos','isPublic','deleted','revision','updatedAt'])
+    && g.id==gid && text(g.name,80) && g.name.size()>0 && text(g.morph,200) && g.sex in ['male','female','unknown']
+    && text(g.hatchDate,10) && text(g.acquiredDate,10) && text(g.breeder,200) && text(g.notes,5000) && text(g.breederNotation,500)
+    && text(g.parent1Id,100) && text(g.parent2Id,100) && g.customTraits is list && g.customTraits.size()<=60 && genes(g.genetics)
+    && photos(g.photos) && g.isPublic is bool && g.deleted is bool && g.revision is int && g.updatedAt==request.time;
+  }
+  function ownGeckoExists(uid,gid) { return exists(/databases/$(database)/documents/users/$(uid)/geckos/$(gid)) && !get(/databases/$(database)/documents/users/$(uid)/geckos/$(gid)).data.deleted; }
+  match /users/{uid}/geckos/{gid} {
+   allow read: if owner(uid);
+   allow create: if owner(uid) && geckoValid(request.resource.data,gid) && request.resource.data.revision==1 && publicationValid(uid,gid,request.resource.data);
+   allow update: if owner(uid) && geckoValid(request.resource.data,gid) && request.resource.data.revision==resource.data.revision+1 && publicationValid(uid,gid,request.resource.data);
+   allow delete: if owner(uid) && !existsAfter(/databases/$(database)/documents/publicGeckos/$(uid+'__'+gid));
+  }
+  match /users/{uid}/growth/{rid} {
+   function valid(d) { return d.keys().hasOnly(['id','geckoId','date','weight','length','condition','note','revision','updatedAt']) && d.id==rid
+    && ownGeckoExists(uid,d.geckoId) && text(d.date,10) && d.weight is number && d.weight>=0 && d.weight<=1000
+    && d.length is number && d.length>=0 && d.length<=100 && text(d.condition,30) && text(d.note,2000) && d.revision is int && d.updatedAt==request.time; }
+   allow read,delete: if owner(uid);
+   allow create: if owner(uid) && valid(request.resource.data) && request.resource.data.revision==1;
+   allow update: if owner(uid) && valid(request.resource.data) && request.resource.data.revision==resource.data.revision+1;
+  }
+  match /users/{uid}/pairings/{rid} {
+   function valid(d) { return d.keys().hasOnly(['id','aId','bId','date','status','note','revision','updatedAt']) && d.id==rid && d.aId!=d.bId
+    && ownGeckoExists(uid,d.aId) && ownGeckoExists(uid,d.bId) && text(d.date,10) && d.status in ['planned','paired','eggs','hatched','closed'] && text(d.note,2000) && d.revision is int && d.updatedAt==request.time; }
+   allow read,delete: if owner(uid);
+   allow create: if owner(uid) && valid(request.resource.data) && request.resource.data.revision==1;
+   allow update: if owner(uid) && valid(request.resource.data) && request.resource.data.revision==resource.data.revision+1;
+  }
+  match /publicGeckos/{pubId} {
+   allow read: if true;
+   allow create,update: if owner(request.resource.data.ownerId)
+    && pubId==request.resource.data.ownerId+'__'+request.resource.data.geckoId
+    && getAfter(/databases/$(database)/documents/users/$(request.resource.data.ownerId)/geckos/$(request.resource.data.geckoId)).data.isPublic
+    && !getAfter(/databases/$(database)/documents/users/$(request.resource.data.ownerId)/geckos/$(request.resource.data.geckoId)).data.deleted
+    && sharedMatches(request.resource.data,getAfter(/databases/$(database)/documents/users/$(request.resource.data.ownerId)/geckos/$(request.resource.data.geckoId)).data,request.resource.data.ownerId,request.resource.data.geckoId);
+   allow delete: if owner(resource.data.ownerId);
+  }
+  function morphValid(m,mid) {
+   return m.keys().hasOnly(['id','name','en','group','look','note','aliases','sources','inheritance','deleted','revision','editorId','updatedAt'])
+    && m.id==mid && mid.matches('[a-zA-Z0-9_-]{1,100}') && text(m.name,80) && m.name.size()>0 && text(m.en,120)
+    && m.group in ['basic','detail','spots','color','genetic','combo','line'] && text(m.look,1500) && m.look.size()>0 && text(m.note,2000) && text(m.aliases,300) && text(m.sources,1500)
+    && m.inheritance in ['codominant','dominant','incomplete_dominant','recessive','polygenic','non_genetic','combination','unknown']
+    && m.deleted is bool && m.revision is int && m.editorId==request.auth.uid && m.updatedAt==request.time;
+  }
+  match /morphs/{mid} {
+   allow read: if true;
+   allow create: if request.auth!=null && morphValid(request.resource.data,mid) && request.resource.data.revision==1
+    && getAfter(/databases/$(database)/documents/morphs/$(mid)/history/$(string(request.resource.data.revision))).data==request.resource.data;
+   allow update: if request.auth!=null && morphValid(request.resource.data,mid) && request.resource.data.revision==resource.data.revision+1
+    && getAfter(/databases/$(database)/documents/morphs/$(mid)/history/$(string(request.resource.data.revision))).data==request.resource.data;
+   allow delete: if false;
+   match /history/{revision} {
+    allow read: if true;
+    allow create: if request.auth!=null && morphValid(request.resource.data,mid) && revision==string(request.resource.data.revision)
+     && getAfter(/databases/$(database)/documents/morphs/$(mid)).data==request.resource.data;
+    allow update,delete: if false;
+   }
+  }
+  match /{document=**} { allow read,write: if false; }
+ }
+}
