@@ -50,3 +50,17 @@ export async function saveMorph(input,expected=0){
 }
 export async function morphHistory(id){const s=await f.getDocs(f.query(f.collection(db,'morphs',id,'history'),f.orderBy('revision','desc'),f.limit(30)));return s.docs.map(d=>d.data());}
 export function friendlyError(e){return ({'auth/popup-closed-by-user':'로그인 창을 닫았습니다. 다시 시도할 수 있어요.','auth/popup-blocked':'로그인 팝업이 차단되었습니다. 이 사이트의 팝업을 허용해 주세요.','auth/unauthorized-domain':'이 사이트 주소를 Firebase 인증의 승인된 도메인에 추가해야 합니다.','permission-denied':'저장 권한을 확인하지 못했습니다. 로그인 상태와 데이터베이스 보안 규칙을 확인하세요.','unavailable':'서버에 연결하지 못했습니다. 입력 내용을 유지한 채 다시 시도하세요.'})[e.code]||e.message||'요청을 처리하지 못했습니다.';}
+
+// Create-only import: retries never overwrite existing user edits or publish records.
+export async function importRecord(kind,record,expectedUid){
+ const u=googleUser();if(u.uid!==expectedUid)throw Error('계정이 변경되었습니다.');
+ if(!['geckos','growth','pairings'].includes(kind)||!record.id.startsWith('legacy_'))throw Error('잘못된 가져오기 기록입니다.');
+ const ref=f.doc(db,'users',u.uid,kind,record.id);
+ return f.runTransaction(db,async tx=>{
+  const old=await tx.get(ref);
+  if(googleUser().uid!==expectedUid)throw Error('계정이 변경되었습니다.');
+  if(old.exists())return false;
+  const data=kind==='geckos'?normalizeGecko({...record,isPublic:false,deleted:false}):record;
+  tx.set(ref,{...data,revision:1,updatedAt:f.serverTimestamp()});return true;
+ });
+}

@@ -8,3 +8,14 @@ test('cross conserves probability and includes super Lilly and visual axanthic',
 test('possible het uses exact two-thirds',()=>{const a=normalizeGecko({id:'a',genetics:{axanthic:'het66'}}),b=normalizeGecko({id:'b',genetics:{axanthic:'visual'}});assert.equal(offspring(a,b).rows.find(x=>x.genes.axanthic===2).p,1/3);});
 test('pedigree cycles and duplicate parents rejected',()=>{const p=normalizeGecko({id:'p',name:'부모'}),c=normalizeGecko({id:'c',name:'자손',parent1Id:'p'});assert.throws(()=>validateGecko({...p,parent1Id:'c'},[p,c]),/후손/);assert.throws(()=>validateGecko({...c,parent2Id:'p'},[p,c]),/서로 다른/);});
 test('deletion overrides seed; restoration does not duplicate',()=>{const initial=SEED[0];const rows=mergeCatalog(SEED,[{...initial,deleted:true,revision:1}]);assert.equal(rows.length,46);assert.equal(filterMorphs(rows).length,45);assert.equal(mergeCatalog(SEED,[{...initial,deleted:false,revision:2}]).length,46);});
+
+test('legacy migration preserves links and measurements, makes all geckos private and rejects dangling records',async()=>{
+ const {convertLegacy,sourceUrl}=await import('../src/legacy-import.mjs');
+ const source={geckos:[{id:'a',name:'부모',isPublic:true},{id:'b',name:'자손',parent1Id:'a',notes:'메모'}],growth:[{id:'r',geckoId:'b',date:'2026-09-20',weight:3.5,length:'',note:'기록'}],pairings:[],photos:[]};
+ const result=convertLegacy(source);
+ assert.equal(result.geckos[1].parent1Id,result.geckos[0].id);assert(result.geckos.every(g=>g.isPublic===false));assert.equal(result.geckos[1].notes,'메모');
+ assert.equal(result.growth[0].geckoId,result.geckos[1].id);assert.equal(result.growth[0].weight,3.5);assert.equal(result.growth[0].length,0);
+ assert.deepEqual(convertLegacy(source).geckos.map(g=>g.id),result.geckos.map(g=>g.id));
+ assert.throws(()=>convertLegacy({...source,growth:[{...source.growth[0],geckoId:'missing'}]}));
+ assert.throws(()=>sourceUrl('https://example.com'));assert.equal(sourceUrl('owner/repo'),'https://raw.githubusercontent.com/owner/repo/crestie-data/data/cresties.json');
+});
